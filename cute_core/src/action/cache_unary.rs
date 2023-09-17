@@ -10,15 +10,14 @@ impl Mapper {
         &mut self,
         name: String,
         proc: Box<dyn crate::CuteProc>,
-        update_time: Duration,
     ) {
         self.proc_map
             .entry(name)
-            .or_insert(MapperObject::new(proc, update_time));
+            .or_insert(MapperObject::new(proc));
     }
 
     pub async fn call(&self, name: String, data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
-        match &mut self.proc_map.get(&*name) {
+        match self.proc_map.get_mut(&*name) {
             None => Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "do not find name",
@@ -33,37 +32,32 @@ impl Mapper {
 
 struct MapperObject {
     proc: Box<dyn crate::CuteProc>,
-    duration: Duration,
-    time_check: std::time::Instant,
-    cache_value: Option<Vec<u8>>,
+    cache_param : Option<Vec<u8>>,
+    cache_value: Vec<u8>,
 }
 
 impl MapperObject {
-    fn new(proc: Box<dyn crate::CuteProc>, duration: Duration) -> Self {
+    fn new(proc: Box<dyn crate::CuteProc>) -> Self {
         Self {
             proc,
-            duration,
-            time_check: Instant::now(),
+            cache_param : None,
             cache_value: None,
         }
     }
 
-    fn check(&self) -> Result<(), std::io::Error> {
-        if self.time_check.elapsed().as_micros() > self.duration.as_micros() {
-            Ok(())
-        } else {
-            Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, ""))
-        }
-    }
-
     fn call(&mut self, data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
-        let _ = self.check()?;
+        if let Some(cached_param) = self.cache_param.as_ref() {
+            if cached_param.as_slice() == data {
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "Data and cache_value are the same."));
+            }
+        }
+
+        self.cache_param =  Some(data.to_vec());
         let _ = self.proc.open(data)?;
         let _ = self.proc.valid_check()?;
         match self.proc.call() {
             Ok(result) => {
-                self.cache_value.insert = Some(result.clone());
-                self.time_check = Instant::now();
+                self.cache_value = result.clone();
                 Ok(result.clone())
             }
             Err(e) => Err(e),
