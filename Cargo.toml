@@ -4,6 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+members = [
+    "cute_core",
+    "cute_connector",
+    "cute_network",
+]
+
 
 [dependencies]
 tokio = {version = "1.24" ,features = ["full"]}
+cute_core = {version = "0.1.0", path = "cute_core" }

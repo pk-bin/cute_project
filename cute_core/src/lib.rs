@@ -1,6 +1,5 @@
-use crate::action::CuteProcType;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::pin::Pin;
+use tokio_stream::Stream;
 
 /// cute core 에서 사용할 mapper trait.
 pub trait CuteMapper {
@@ -24,7 +23,8 @@ pub trait CuteProc: Send + Sync + 'static {
 
 /// CuteMap
 pub struct CuteMap {
-    proc_name_map: std::collections::HashMap<String, action::CuteProcType>,
+    unary_name_map: std::collections::HashMap<String, action::CuteProcType>,
+    stream_name_map: std::collections::HashMap<String, action::CuteProcType>,
     unary_map: action::cache_unary::Mapper,
     atomic_stream: action::atomic_stream::NoneMapper,
     multi_stream: action::multi_stream::NoneMapper,
@@ -34,7 +34,8 @@ impl CuteMap {
     /// Map을 생성.
     pub fn new() -> Self {
         Self {
-            proc_name_map: Default::default(),
+            unary_name_map: Default::default(),
+            stream_name_map: Default::default(),
             unary_map: Default::default(),
             atomic_stream: Default::default(),
             multi_stream: Default::default(),
@@ -47,7 +48,14 @@ impl CuteMap {
         name: String,
         cute_type: action::CuteProcType,
     ) -> Result<(), std::io::Error> {
-        self.proc_name_map.entry(name).or_insert(cute_type);
+        match cute_type {
+            action::CuteProcType::CacheUnary(_, _) => {
+                self.unary_name_map.entry(name).or_insert(cute_type);
+            }
+            _ => {
+                self.stream_name_map.entry(name).or_insert(cute_type);
+            }
+        }
         Ok(())
     }
     /// unary 작업을 open 및 실행한다.
@@ -56,17 +64,15 @@ impl CuteMap {
         name: String,
         data: &[u8],
     ) -> Result<Vec<u8>, std::io::Error> {
-        match self.proc_name_map.get(&*name) {
+        match self.unary_name_map.get(&*name) {
             None => Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "not found unary key",
             )),
             Some(proc_type) => match proc_type {
-                CuteProcType::CacheUnary(proc_name, creator, duration) => {
+                action::CuteProcType::CacheUnary(proc_name, creator) => {
                     let proc = creator();
-                    self.unary_map
-                        .register(proc_name.clone(), proc, *duration)
-                        .await;
+                    self.unary_map.register(proc_name.clone(), proc).await;
                     self.unary_map.call(proc_name.clone(), data).await
                 }
                 _ => Err(std::io::Error::new(
@@ -77,28 +83,49 @@ impl CuteMap {
         }
     }
 
-    pub async fn open_stream(&mut self, name: String, is_atomic: bool, data: &[u8]) {
-        match self.proc_name_map.get_mut(&*name) {
-            None => {}
+    pub async fn open_stream(
+        &mut self,
+        name: String,
+        is_atomic: bool,
+        data: &[u8],
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Vec<u8>, std::io::Error>> + Send>>, std::io::Error>
+    {
+        match self.stream_name_map.get_mut(&*name) {
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "do not find proc name",
+            )),
             Some(proc_type) => match proc_type {
-                CuteProcType::AtomicStream(proc_name, creator) => {
+                action::CuteProcType::AtomicStream(_, creator) => {
                     if is_atomic {
                         let mut proc = creator();
-                        self.atomic_stream.register(proc.as_mut(), data).await;
-                        self.atomic_stream.call(proc).await;
+                        self.atomic_stream.register(proc.as_mut(), data).await?;
+                        Ok(self.atomic_stream.call(proc).await)
+                    } else {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "Cute Process Type Error",
+                        ))
                     }
                 }
-                CuteProcType::MultiStream(proc_name, creator) => {
+                action::CuteProcType::MultiStream(_, creator) => {
                     if !is_atomic {
                         let mut proc = creator();
-                        self.multi_stream.register(proc.as_mut(), data).await;
-                        self.multi_stream.call(proc).await;
+                        self.multi_stream.register(proc.as_mut(), data).await?;
+                        Ok(self.multi_stream.call(proc).await)
+                    } else {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "Cute Process Type Error",
+                        ))
                     }
                 }
-                _ => {}
+                _ => Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Cute Process Type Error",
+                )),
             },
         }
     }
 }
-
 pub mod action;
